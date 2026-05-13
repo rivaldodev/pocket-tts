@@ -1,6 +1,8 @@
 import io
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -30,6 +32,101 @@ from pocket_tts.utils.logging_utils import enable_logging
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES
 
 logger = logging.getLogger(__name__)
+
+_SUPPORTED_UPLOAD_SUFFIXES = {
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+}
+
+
+def _normalize_uploaded_voice_audio(voice_upload: UploadFile) -> Path:
+    suffix = Path(voice_upload.filename or "").suffix.lower()
+    if suffix not in _SUPPORTED_UPLOAD_SUFFIXES:
+        suffix = ".bin"
+
+    content = voice_upload.file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded voice reference audio is empty.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as source_file:
+        source_file.write(content)
+        source_path = Path(source_file.name)
+
+    wav_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    wav_file.close()
+    wav_path = Path(wav_file.name)
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Audio conversion is unavailable because ffmpeg is not installed.",
+            )
+
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(source_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                "-c:a",
+                "pcm_s16le",
+                str(wav_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            claimed_mp3 = suffix == ".mp3" or voice_upload.content_type == "audio/mpeg"
+            if claimed_mp3:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "The uploaded file was presented as MP3, but it could not be decoded "
+                        "as MPEG audio. It may be mislabeled or corrupted; export it again "
+                        "or upload WAV/M4A/WebM."
+                    ),
+                )
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not decode the uploaded voice reference audio. "
+                    "Supported inputs include WAV, MP3, M4A, FLAC, OGG, Opus, AAC, and WebM."
+                ),
+            )
+
+        if wav_path.stat().st_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Audio conversion completed without producing usable voice data.",
+            )
+
+        return wav_path
+    except Exception:
+        if wav_path.exists():
+            wav_path.unlink()
+        raise
+    finally:
+        if source_path.exists():
+            source_path.unlink()
 
 cli_app = typer.Typer(
     help="Kyutai Pocket TTS - Text-to-Speech generation tool", pretty_exceptions_show_locals=False
@@ -155,27 +252,11 @@ def text_to_speech(
         model_state = tts_model._cached_get_state_for_audio_prompt(voice_url)
         logging.warning("Using voice from URL: %s", voice_url)
     elif voice_wav is not None:
-        # Use uploaded voice file - preserve extension for format detection
-        suffix = Path(voice_wav.filename).suffix if voice_wav.filename else ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            content = voice_wav.file.read()
-            temp_file.write(content)
-            temp_file.flush()
-            temp_file_path = temp_file.name
-
-        # Close the file before reading it back (required on Windows)
+        temp_wav_path = _normalize_uploaded_voice_audio(voice_wav)
         try:
-            model_state = tts_model.get_state_for_audio_prompt(Path(temp_file_path), truncate=True)
-        except Exception as error:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Could not read the uploaded voice reference audio. "
-                    "Use a valid WAV, MP3, FLAC, OGG, or M4A file; WAV PCM is the most reliable option."
-                ),
-            ) from error
+            model_state = tts_model.get_state_for_audio_prompt(temp_wav_path, truncate=True)
         finally:
-            os.unlink(temp_file_path)
+            temp_wav_path.unlink(missing_ok=True)
     else:
         raise HTTPException(status_code=500, detail="This should never happen.")
 
