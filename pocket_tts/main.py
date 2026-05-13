@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from typing_extensions import Annotated
 
 from pocket_tts.data.audio import stream_audio_chunks
@@ -46,7 +47,7 @@ _SUPPORTED_UPLOAD_SUFFIXES = {
 }
 
 
-def _normalize_uploaded_voice_audio(voice_upload: UploadFile) -> Path:
+def _normalize_uploaded_voice_audio(voice_upload: StarletteUploadFile) -> Path:
     suffix = Path(voice_upload.filename or "").suffix.lower()
     if suffix not in _SUPPORTED_UPLOAD_SUFFIXES:
         suffix = ".bin"
