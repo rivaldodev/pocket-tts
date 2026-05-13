@@ -203,6 +203,11 @@ class TTSModel(nn.Module):
             try:
                 weights_file = download_if_necessary(config.weights_path)
             except Exception:
+                logger.exception(
+                    "Failed to download voice-cloning weights from %s; "
+                    "falling back to the no-cloning checkpoint.",
+                    config.weights_path,
+                )
                 tts_model.has_voice_cloning = False
                 weights_file = download_if_necessary(config.weights_path_without_voice_cloning)
 
