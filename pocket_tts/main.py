@@ -166,6 +166,14 @@ def text_to_speech(
         # Close the file before reading it back (required on Windows)
         try:
             model_state = tts_model.get_state_for_audio_prompt(Path(temp_file_path), truncate=True)
+        except Exception as error:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not read the uploaded voice reference audio. "
+                    "Use a valid WAV, MP3, FLAC, OGG, or M4A file; WAV PCM is the most reliable option."
+                ),
+            ) from error
         finally:
             os.unlink(temp_file_path)
     else:
